@@ -27,7 +27,13 @@ Para a leitura (`GET /accounts/:accountId`): `getAccount.ts` → `kyselyAccountD
 | Rota | O que faz |
 |---|---|
 | `POST /signup` | cria a conta (`201 { accountId }`; `409` e-mail já cadastrado; `422` dado inválido) |
-| `GET /accounts/:accountId` | conta + `assets[{ assetId, quantity, available, reserved }]` (da projeção; `[]` enquanto nada foi projetado) |
+| `GET /accounts/:accountId` | conta + `assets[{ assetId, quantity, available, reserved }]` (da projeção; `[]` enquanto nada foi projetado) · `403` se não for a conta do token |
+| `POST /login` | `204` + cookie `session` (`HttpOnly`, `Secure`, `SameSite=Strict`, 12 h) · `401 invalidCredentials` · `429 tooManyLoginAttempts` com `Retry-After` |
+| `POST /logout` | `204`, revoga a sessão e apaga o cookie |
+| `GET /me` | `{ accountId, name, email }` do usuário do token |
+| `GET /internal/session` | só para o edge (`auth_request`): cookie + `X-Audience` → `204` com o JWT em `X-User-Token`; sem sessão viva → `401` |
+
+**Usuário:** `/login`, `/logout`, `/signup` e `/internal/session` são públicas; as demais exigem o JWT interno em `Authorization: Bearer …` (`aud: account`). O `account` é o único que assina esse JWT (`USER_TOKEN_PRIVATE_KEY`, Ed25519) e também o verifica (`USER_TOKEN_PUBLIC_KEY`). A sessão guarda só o SHA-256 do token do cookie (tabela `session`). Bloqueio de login no Redis (`account:login:*`): 5 falhas em 15 min travam o e-mail por 5 min, dobrando até 24 h; 20 falhas por IP por hora. Se o Redis cair, o login segue sem bloqueio.
 
 **gRPC interno:** só servidor, `AccountService.Exists` (usado pelo `wallet`). Toda chamada leva o token compartilhado `GRPC_TOKEN` no metadata `x-service-token`; sem ele, `UNAUTHENTICATED`.
 

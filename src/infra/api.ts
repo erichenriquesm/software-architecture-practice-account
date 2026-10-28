@@ -4,6 +4,7 @@ import { Argon2PasswordHasher } from './crypto/argon2PasswordHasher.js';
 import { createDatabase } from './database/postgres.js';
 import { startAccountGrpcServer } from './grpc/accountGrpcServer.js';
 import { RedisRateLimiter } from './platform/http/rateLimit/rateLimiter.js';
+import { createTrustedProxy } from './platform/http/trustedProxy.js';
 import { CounterLoginThrottle } from './security/counterLoginThrottle.js';
 import { RedisCounterStore } from './security/redisCounterStore.js';
 import {
@@ -14,7 +15,7 @@ import {
   rateLimitSetting,
   redisSettings,
   secureCookieSetting,
-  trustedProxySubnets,
+  trustedProxyHostSetting,
   userTokenKeysSetting,
 } from './settings.js';
 
@@ -25,6 +26,11 @@ const redis = new Redis({
   commandTimeout: 100,
   maxRetriesPerRequest: 1,
 }).on('error', () => undefined);
+
+const edgeProxy = createTrustedProxy({
+  hostname: trustedProxyHostSetting(),
+  onError: (error) => app.log.warn({ err: error }, 'edge lookup failed, keeping the last known address'),
+});
 
 const app = buildAccountApi({
   db,
@@ -40,7 +46,7 @@ const app = buildAccountApi({
   loginThrottle: new CounterLoginThrottle(new RedisCounterStore(redis, `${serviceName}:login`), (error) => app.log.warn({ err: error }, 'login throttle unavailable, failing open')),
   userTokenKeys: userTokenKeysSetting(),
   secureCookie: secureCookieSetting(),
-  trustProxy: trustedProxySubnets(),
+  trustProxy: edgeProxy.trust,
   logger: true,
 });
 
@@ -52,6 +58,7 @@ const grpcServer = await startAccountGrpcServer({
 });
 
 const shutdown = async (): Promise<void> => {
+  edgeProxy.stop();
   grpcServer.server.forceShutdown();
   await app.close();
   redis.disconnect();
@@ -60,4 +67,5 @@ const shutdown = async (): Promise<void> => {
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
 
+await edgeProxy.start();
 await app.listen({ host: '0.0.0.0', port: apiPortSetting() });

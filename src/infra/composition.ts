@@ -50,7 +50,7 @@ export interface AccountApiDependencies {
   readonly extraProbes?: readonly DependencyProbe[];
   readonly idGenerator?: IdGenerator;
   readonly clock?: Clock;
-  readonly trustProxy?: string[] | boolean;
+  readonly trustProxy?: (address: string, hop: number) => boolean;
   readonly logger?: boolean;
 }
 

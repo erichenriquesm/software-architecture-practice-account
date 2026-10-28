@@ -2,8 +2,23 @@ import Fastify from 'fastify';
 import { describe, expect, test } from 'vitest';
 import { registerRateLimit } from '../../../../../../src/infra/platform/http/rateLimit/rateLimitPlugin.js';
 import type { RateLimitCheck, RateLimiter } from '../../../../../../src/infra/platform/http/rateLimit/rateLimiter.js';
-import { FallbackRateLimiter, InMemoryRateLimiter } from '../../../../../../src/infra/platform/http/rateLimit/rateLimiter.js';
-import { decide } from '../../../../../../src/infra/platform/http/rateLimit/slidingWindow.js';
+import type { RateLimitDecision } from '../../../../../../src/infra/platform/http/rateLimit/slidingWindow.js';
+import { decide, windowPosition } from '../../../../../../src/infra/platform/http/rateLimit/slidingWindow.js';
+
+/** Same sliding-window math as RedisRateLimiter, with the counters in a Map: the plugin is tested without Redis. */
+class CountingRateLimiter implements RateLimiter {
+  private readonly counts = new Map<string, number>();
+
+  async check(check: RateLimitCheck): Promise<RateLimitDecision> {
+    const position = windowPosition(check.nowMs, check.policy.windowMs);
+    const key = (bucketStart: number) => `${check.policy.name}:${check.subject}:${bucketStart}`;
+    const currentCount = this.counts.get(key(position.currentBucketStart)) ?? 0;
+    const previousCount = this.counts.get(key(position.previousBucketStart)) ?? 0;
+    const decision = decide({ previousCount, currentCount, elapsedMs: position.elapsedMs, cost: check.cost, policy: check.policy });
+    if (decision.allowed) this.counts.set(key(position.currentBucketStart), currentCount + check.cost);
+    return decision;
+  }
+}
 
 const policy = { name: 'orders', limit: 10, windowMs: 10_000 };
 
@@ -29,39 +44,11 @@ describe('Sliding window counter', () => {
   });
 });
 
-describe('InMemoryRateLimiter', () => {
-  test('Should allow up to the limit and then deny within the same window', async () => {
-    // Given
-    const limiter = new InMemoryRateLimiter('svc');
-    const check: RateLimitCheck = { subject: 'ip:1.1.1.1', policy: { name: 'auth', limit: 3, windowMs: 60_000 }, cost: 1, nowMs: 1_000 };
-
-    // When
-    const decisions = [];
-    for (let index = 0; index < 4; index += 1) decisions.push(await limiter.check(check));
-
-    // Then
-    expect(decisions.map((decision) => decision.allowed)).toEqual([true, true, true, false]);
-  });
-});
-
-describe('FallbackRateLimiter', () => {
-  test('Should keep limiting with the fallback when the primary limiter fails', async () => {
-    // Given
-    const broken: RateLimiter = { check: async () => Promise.reject(new Error('redis down')) };
-    const limiter = new FallbackRateLimiter(broken, new InMemoryRateLimiter('svc'));
-    const check: RateLimitCheck = { subject: 'ip:1', policy: { name: 'auth', limit: 1, windowMs: 60_000 }, cost: 1, nowMs: 0 };
-
-    // When & Then
-    expect((await limiter.check(check)).allowed).toBe(true);
-    expect((await limiter.check(check)).allowed).toBe(false);
-  });
-});
-
 describe('Rate limit plugin', () => {
-  const buildApp = () => {
+  const buildApp = (limiter: RateLimiter = new CountingRateLimiter()) => {
     const app = Fastify();
     registerRateLimit(app, {
-      limiter: new InMemoryRateLimiter('svc'),
+      limiter,
       now: () => 1_000,
       groups: [
         {
@@ -103,6 +90,18 @@ describe('Rate limit plugin', () => {
 
     // When
     const response = await app.inject({ method: 'POST', url: '/other' });
+
+    // Then
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['ratelimit']).toBeUndefined();
+  });
+
+  test('Should let the request through without RateLimit headers when the limiter fails (fail-open)', async () => {
+    // Given
+    const app = buildApp({ check: async () => Promise.reject(new Error('redis down')) });
+
+    // When
+    const response = await app.inject({ method: 'POST', url: '/place_order', payload: { accountId: 'a-1' } });
 
     // Then
     expect(response.statusCode).toBe(200);

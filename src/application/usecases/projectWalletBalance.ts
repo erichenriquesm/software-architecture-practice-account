@@ -1,8 +1,6 @@
-import type { BalanceProjection } from '../contracts/balanceProjection.js';
-import type { BalanceChange } from '../dtos/balanceView.js';
-import type { UseCase } from './useCase.js';
+import type { BalanceChange, BalanceProjection } from '../contracts/balanceProjection.js';
 
-export class ProjectWalletBalance implements UseCase<[change: BalanceChange], boolean> {
+export class ProjectWalletBalance {
   constructor(private readonly balanceProjection: BalanceProjection) {}
 
   async execute(change: BalanceChange): Promise<boolean> {

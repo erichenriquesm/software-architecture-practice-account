@@ -1,5 +1,5 @@
 import type { ProjectWalletBalance } from '../../application/usecases/projectWalletBalance.js';
-import type { BalanceChange } from '../../application/dtos/balanceView.js';
+import type { BalanceChange } from '../../application/contracts/balanceProjection.js';
 import type { FailureKind, MessageHandler } from '../platform/messaging/consumer.js';
 import type { SchemaValidator } from '../platform/messaging/schemas.js';
 import { ContractViolationError, loadSchemaValidator } from '../platform/messaging/schemas.js';

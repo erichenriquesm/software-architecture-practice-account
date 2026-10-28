@@ -1,5 +1,4 @@
-import type { AccountDao } from '../../application/contracts/accountDao.js';
-import type { AccountView } from '../../application/dtos/accountView.js';
+import type { AccountDao, AccountView } from '../../application/contracts/accountDao.js';
 import type { KyselyTransactionRunner } from './kyselyTransactionRunner.js';
 import type { Database } from './database.js';
 

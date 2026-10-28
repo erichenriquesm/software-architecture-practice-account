@@ -1,70 +1,26 @@
 import grpc from '@grpc/grpc-js';
 import { describe, expect, test } from 'vitest';
-import {
-  authenticatedCaller,
-  identify,
-  InvalidServiceAuthConfigurationError,
-  parseAllowedCallers,
-  validateAllowlist,
-} from '../../../../../src/infra/platform/security/serviceAuth.js';
+import { hasServiceToken, serviceTokenHeader } from '../../../../../src/infra/platform/security/serviceAuth.js';
 
-describe('parseAllowedCallers', () => {
-  test('Should read name:token pairs separated by commas', () => {
-    // When
-    const callers = parseAllowedCallers('wallet:wallet-grpc-dev, order:order-grpc-dev');
+const metadataWith = (token?: string): grpc.Metadata => {
+  const metadata = new grpc.Metadata();
+  if (token !== undefined) metadata.set(serviceTokenHeader, token);
+  return metadata;
+};
 
-    // Then
-    expect([...callers.entries()]).toEqual([
-      ['wallet', 'wallet-grpc-dev'],
-      ['order', 'order-grpc-dev'],
-    ]);
-  });
-
-  test('Should accept an empty value as no callers', () => {
+describe('hasServiceToken', () => {
+  test('Should accept the shared token sent as x-service-token', () => {
     // When & Then
-    expect(parseAllowedCallers('').size).toBe(0);
-  });
-
-  test.each(['wallet', 'wallet:', ':token', 'wallet:a:b', 'Wallet:token'])('Should reject the malformed entry %j', (value) => {
-    // When & Then
-    expect(() => parseAllowedCallers(value)).toThrowError(InvalidServiceAuthConfigurationError);
-  });
-});
-
-describe('authenticatedCaller', () => {
-  const callers = parseAllowedCallers('wallet:wallet-grpc-dev');
-  const metadataOf = (name: string, token: string) => identify(new grpc.Metadata(), { name, token });
-
-  test('Should identify a known caller with the right token', () => {
-    // When & Then
-    expect(authenticatedCaller(callers, metadataOf('wallet', 'wallet-grpc-dev'))).toBe('wallet');
+    expect(hasServiceToken('internal-grpc-dev', metadataWith('internal-grpc-dev'))).toBe(true);
   });
 
   test.each([
-    ['wrong token', 'wallet', 'other-token'],
-    ['unknown caller', 'order', 'wallet-grpc-dev'],
-    ['no headers', '', ''],
-  ])('Should not identify a caller with %s', (_case, name, token) => {
+    ['a wrong token', 'other-token'],
+    ['a token with a different length', 'internal'],
+    ['an empty token', ''],
+    ['no token', undefined],
+  ])('Should refuse %s', (_case, token) => {
     // When & Then
-    expect(authenticatedCaller(callers, metadataOf(name, token))).toBeNull();
-  });
-});
-
-describe('validateAllowlist', () => {
-  const served = ['/trading.account.v1.AccountService/Exists'];
-
-  test('Should accept an allowlist for served methods', () => {
-    // Given
-    const allowlist = { '/trading.account.v1.AccountService/Exists': ['wallet'] };
-
-    // When & Then
-    expect(validateAllowlist(allowlist, served)).toBe(allowlist);
-  });
-
-  test('Should reject an entry for a method the server does not serve', () => {
-    // When & Then
-    expect(() => validateAllowlist({ '/trading.account.v1.AccountService/Delete': ['wallet'] }, served)).toThrowError(
-      InvalidServiceAuthConfigurationError,
-    );
+    expect(hasServiceToken('internal-grpc-dev', metadataWith(token))).toBe(false);
   });
 });

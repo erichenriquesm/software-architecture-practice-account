@@ -7,19 +7,23 @@ import { FullName } from '../../domain/valueObjects/fullName.js';
 import { Password } from '../../domain/valueObjects/password.js';
 import type { AccountRepository } from '../contracts/accountRepository.js';
 import type { PasswordHasher } from '../contracts/passwordHasher.js';
-import type { DomainEventDispatcher } from '../contracts/domainEventDispatcher.js';
+import type { EventPublisher } from '../contracts/eventPublisher.js';
 import type { Clock } from '../contracts/clock.js';
 import type { IdGenerator } from '../contracts/idGenerator.js';
 import type { TransactionRunner } from '../contracts/transactionRunner.js';
-import type { UseCase } from './useCase.js';
-import type { SignupInput } from '../dtos/signupDto.js';
+export interface SignupInput {
+  readonly name: string;
+  readonly email: string;
+  readonly document: string;
+  readonly password: string;
+}
 
-export class Signup implements UseCase<[input: SignupInput], string> {
+export class Signup {
   constructor(
     private readonly accountRepository: AccountRepository,
     private readonly passwordHasher: PasswordHasher,
     private readonly transactionRunner: TransactionRunner,
-    private readonly domainEventDispatcher: DomainEventDispatcher,
+    private readonly eventPublisher: EventPublisher,
     private readonly idGenerator: IdGenerator,
     private readonly clock: Clock,
   ) {}
@@ -29,7 +33,7 @@ export class Signup implements UseCase<[input: SignupInput], string> {
 
     await this.transactionRunner.run(async () => {
       await this.accountRepository.save(account);
-      await this.domainEventDispatcher.dispatch(account.pullEvents());
+      await this.eventPublisher.publish(account.pullEvents());
     });
 
     return account.id.value;

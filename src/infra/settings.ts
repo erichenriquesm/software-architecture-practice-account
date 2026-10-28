@@ -2,8 +2,6 @@ import { networkInterfaces } from 'node:os';
 import type { PostgresSettings } from './database/postgres.js';
 import { MissingConfigurationError, numberEnv, requiredEnv } from './platform/config/env.js';
 import type { RateLimitPolicy } from './platform/http/rateLimit/slidingWindow.js';
-import type { AllowedCallers, ServiceIdentity } from './platform/security/serviceAuth.js';
-import { parseAllowedCallers } from './platform/security/serviceAuth.js';
 
 export const apiPortSetting = (): number => numberEnv('API_PORT', 3000);
 
@@ -33,12 +31,8 @@ export const redisSettings = (): RedisSettings => ({
   password: requiredEnv('REDIS_PASSWORD'),
 });
 
-export const grpcIdentitySetting = (): ServiceIdentity => ({
-  name: requiredEnv('GRPC_SERVICE_NAME'),
-  token: requiredEnv('GRPC_SERVICE_TOKEN'),
-});
-
-export const grpcAllowedCallersSetting = (): AllowedCallers => parseAllowedCallers(process.env.GRPC_ALLOWED_CALLERS ?? '');
+/** Shared token every internal gRPC caller sends as `x-service-token`. */
+export const grpcTokenSetting = (): string => requiredEnv('GRPC_TOKEN');
 
 const unitMs: ReadonlyMap<string, number> = new Map([
   ['s', 1_000],

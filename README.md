@@ -6,7 +6,7 @@ Identidade e Conta: cadastro (nome, e-mail, CPF, senha) e consulta da conta com 
 
 ## O que faz
 
-Cadastra contas (nome, e-mail, CPF e senha com argon2id) e responde a conta com os saldos, lidos de uma projeção local alimentada pelo `wallet` (com fallback por gRPC e resposta degradada se o `wallet` estiver fora).
+Cadastra contas (nome, e-mail, CPF e senha com argon2id) e responde a conta com os saldos, lidos só de uma projeção local alimentada pelo evento `wallet.balanceChanged` (conta nova, sem linhas na projeção, responde `assets: []`).
 
 A especificação completa (modelo, casos de uso, dados, testes) está na spec do serviço: [`sdd/services/account.md`](https://github.com/erichenriquesm/software-architecture-practice/blob/main/sdd/services/account.md). As regras de arquitetura valem para todos os serviços: [`sdd/01-principios.md`](https://github.com/erichenriquesm/software-architecture-practice/blob/main/sdd/01-principios.md).
 
@@ -18,18 +18,18 @@ Um cadastro, de ponta a ponta:
 2. `src/application/usecases/signup.ts`: valida, faz o hash da senha e cria a conta.
 3. `src/domain/entities/account.ts`: a entidade, com as regras (e-mail, CPF) e o evento `AccountCreated`.
 4. `src/infra/database/kyselyAccountRepository.ts`: grava a conta no Postgres.
-5. `src/infra/messaging/accountIntegrationEvents.ts`: transforma o evento em `account.created` e grava no outbox, na mesma transação; o worker publica no RabbitMQ.
+5. `src/infra/messaging/outboxEventPublisher.ts`: o caso de uso entrega os eventos ao `EventPublisher`, que transforma `AccountCreated` em `account.created` e grava no outbox, na mesma transação; o worker publica no RabbitMQ.
 
-Para a leitura (`GET /accounts/:accountId`): `getAccount.ts` → `kyselyAccountDao.ts` (dados da conta) e `kyselyBalanceDao.ts` (saldos projetados do `wallet`).
+Para a leitura (`GET /accounts/:accountId`): `getAccount.ts` → `kyselyAccountDao.ts` (dados da conta) e `kyselyBalanceDao.ts` (saldos projetados do `wallet`, tabela `account_balance_view`).
 
 ## API
 
 | Rota | O que faz |
 |---|---|
 | `POST /signup` | cria a conta (`201 { accountId }`; `409` e-mail já cadastrado; `422` dado inválido) |
-| `GET /accounts/:accountId` | conta + `assets[{ assetId, quantity, available, reserved }]` + `balancesStatus` |
+| `GET /accounts/:accountId` | conta + `assets[{ assetId, quantity, available, reserved }]` (da projeção; `[]` enquanto nada foi projetado) |
 
-**gRPC interno:** Servidor `AccountService.Exists` (só o `wallet` pode chamar). Cliente de `WalletService.GetBalances`.
+**gRPC interno:** só servidor, `AccountService.Exists` (usado pelo `wallet`). Toda chamada leva o token compartilhado `GRPC_TOKEN` no metadata `x-service-token`; sem ele, `UNAUTHENTICATED`.
 
 ## Eventos (RabbitMQ)
 
@@ -49,7 +49,7 @@ make clone
 make up
 ```
 
-Containers: `account-api` (REST + gRPC) · `account-worker` (outbox + projeção de saldos) · `account-db`. Portas no host (só para depurar): REST 3001 · gRPC 50051 · Postgres 5433.
+Containers: `account-api` (REST + gRPC) · `account-worker` (outbox + projeção de saldos; se a conexão com o RabbitMQ cai, ele sai e o Docker o reinicia) · `account-db`. Portas no host (só para depurar): REST 3001 · gRPC 50051 · Postgres 5433.
 
 Dentro da pasta do serviço (`backend/account/`):
 
@@ -64,7 +64,7 @@ Dentro da pasta do serviço (`backend/account/`):
 ```
 src/
   domain/        regras de negócio (entities, valueObjects, events)
-  application/   casos de uso, DTOs e contratos (interfaces)
+  application/   casos de uso (com seus Input/Output) e contratos (interfaces e tipos View dos DAOs)
   infra/         HTTP, mensageria, banco, plataforma técnica, schemas de eventos
 test/
   unit/  integration/  fakes/  support/

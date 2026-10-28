@@ -5,7 +5,6 @@ export interface Database {
   account_balance_view: AccountBalanceViewTable;
   outbox: OutboxTable;
   inbox: InboxTable;
-  idempotency_key: IdempotencyKeyTable;
 }
 
 export interface OutboxTable {
@@ -22,17 +21,6 @@ export interface InboxTable {
   consumer: string;
   message_key: string;
   processed_at: Generated<Date>;
-}
-
-export interface IdempotencyKeyTable {
-  scope: string;
-  key: string;
-  request_hash: string;
-  state: string;
-  status_code: number | null;
-  response_body: ColumnType<unknown, string | null, string | null>;
-  created_at: Generated<Date>;
-  expires_at: Date;
 }
 
 export interface AccountTable {

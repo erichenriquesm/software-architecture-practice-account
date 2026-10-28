@@ -1,5 +1,4 @@
-import type { AccountDao } from '../../src/application/contracts/accountDao.js';
-import type { AccountView } from '../../src/application/dtos/accountView.js';
+import type { AccountDao, AccountView } from '../../src/application/contracts/accountDao.js';
 
 export class FakeAccountDao implements AccountDao {
   constructor(private readonly account?: AccountView) {}

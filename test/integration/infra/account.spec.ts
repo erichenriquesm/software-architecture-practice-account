@@ -1,34 +1,29 @@
+import { randomUUID } from 'node:crypto';
 import grpc from '@grpc/grpc-js';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
+import { Redis } from 'ioredis';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import type { TestDatabase } from '../../support/database.js';
 import { createTestDatabase } from '../../support/database.js';
-import type { FakeWallet } from '../../support/fakeWallet.js';
-import { startFakeWallet } from '../../support/fakeWallet.js';
 import type { PasswordHasher } from '../../../src/application/contracts/passwordHasher.js';
 import type { Password } from '../../../src/domain/valueObjects/password.js';
 import { PasswordHash } from '../../../src/domain/valueObjects/passwordHash.js';
 import { startAccountGrpcServer } from '../../../src/infra/grpc/accountGrpcServer.js';
 import { walletBalancesHandler } from '../../../src/infra/messaging/walletBalancesConsumer.js';
-import { GrpcWalletGateway } from '../../../src/infra/grpc/wallet/grpcWalletGateway.js';
 import { AccountServiceClient } from '../../../src/infra/generated/account.js';
 import { buildAccountApi, buildAccountCore } from '../../../src/infra/composition.js';
 import type { RateLimiter } from '../../../src/infra/platform/http/rateLimit/rateLimiter.js';
-import { InMemoryRateLimiter } from '../../../src/infra/platform/http/rateLimit/rateLimiter.js';
+import { RedisRateLimiter } from '../../../src/infra/platform/http/rateLimit/rateLimiter.js';
 import { createEnvelope, loadEnvelopeValidator } from '../../../src/infra/platform/messaging/envelope.js';
 import { loadSchemaValidator } from '../../../src/infra/platform/messaging/schemas.js';
-import { identify, parseAllowedCallers } from '../../../src/infra/platform/security/serviceAuth.js';
+import { serviceTokenHeader } from '../../../src/infra/platform/security/serviceAuth.js';
 
 const fastHasher: PasswordHasher = { hash: async (password: Password) => PasswordHash.from(`$argon2id$test$${password.value.length}`) };
-const fastRetry = { baseMs: 1, capMs: 5, maxAttempts: 3 };
 const unlimited: RateLimiter = {
   check: async (check) => ({ allowed: true, remaining: check.policy.limit, resetSeconds: 0, retryAfterSeconds: 0, policy: check.policy }),
 };
-const accountIdentity = { name: 'account', token: 'account-grpc-test' };
 
 let database: TestDatabase;
-let wallet: FakeWallet;
-let gateway: GrpcWalletGateway;
 let app: FastifyInstance;
 
 const signupBody = (email: string) => ({ name: 'Ana Souza', email, document: '529.982.247-25', password: 'Abcdefg1' });
@@ -36,19 +31,10 @@ const signup = (email: string) => app.inject({ method: 'POST', url: '/signup', p
 
 beforeAll(async () => {
   database = await createTestDatabase();
-  wallet = await startFakeWallet(parseAllowedCallers('account:account-grpc-test'));
-  gateway = new GrpcWalletGateway({ address: wallet.address, identity: accountIdentity, retryPolicy: fastRetry });
-  app = buildAccountApi({ db: database.db, rateLimiter: unlimited, wallet: gateway, passwordHasher: fastHasher });
-});
-
-afterEach(() => {
-  wallet.calls = 0;
-  wallet.answers = [];
+  app = buildAccountApi({ db: database.db, rateLimiter: unlimited, passwordHasher: fastHasher });
 });
 
 afterAll(async () => {
-  gateway.close();
-  wallet.stop();
   await app.close();
   await database.destroy();
 });
@@ -81,7 +67,9 @@ describe('Signup', () => {
 describe('Signup rate limit', () => {
   test('Should allow 3 attempts per email and 5 per IP per hour, then answer 429 with Retry-After', async () => {
     // Given
-    const limitedApp = buildAccountApi({ db: database.db, rateLimiter: new InMemoryRateLimiter('account'), wallet: gateway, passwordHasher: fastHasher });
+    const redis = new Redis(process.env.TEST_REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: 1 });
+    const rateLimiter = new RedisRateLimiter(redis, `account${randomUUID().slice(0, 8)}`);
+    const limitedApp = buildAccountApi({ db: database.db, rateLimiter, passwordHasher: fastHasher });
     const attempt = (email: string) => limitedApp.inject({ method: 'POST', url: '/signup', payload: signupBody(email) });
 
     // When
@@ -93,6 +81,7 @@ describe('Signup rate limit', () => {
     expect(Number(sameEmail[3]?.headers['retry-after'])).toBeGreaterThan(0);
     expect(otherEmails.map((response) => response.statusCode)).toEqual([201, 429]);
     await limitedApp.close();
+    redis.disconnect();
   });
 });
 
@@ -100,7 +89,7 @@ describe('GetAccount balances', () => {
   const projectBalance = async (accountId: string, available: string, version: number) =>
     buildAccountCore(database.db).projectWalletBalance.execute({ accountId, assetId: 'USD', available, reserved: '0', version });
 
-  test('Should answer from the projection (ok) and keep the newest version when an older one arrives late', async () => {
+  test('Should answer from the projection and keep the newest version when an older one arrives late', async () => {
     // Given
     const { accountId } = (await signup('projected@example.com')).json();
     await projectBalance(accountId, '200', 2);
@@ -110,50 +99,26 @@ describe('GetAccount balances', () => {
     const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
 
     // Then
-    expect(response.json()).toMatchObject({
-      balancesStatus: 'ok',
+    expect(response.json()).toEqual({
+      accountId,
+      name: 'Ana Souza',
+      email: 'projected@example.com',
+      document: '52998224725',
       assets: [{ assetId: 'USD', quantity: '200.00000000', available: '200.00000000', reserved: '0.00000000' }],
     });
-    expect(wallet.calls).toBe(0);
   });
 
-  test('Should ask the wallet (live), retrying a transient UNAVAILABLE, when the projection is empty', async () => {
+  test('Should answer an empty asset list for a new account with nothing projected yet', async () => {
     // Given
-    const { accountId } = (await signup('live@example.com')).json();
-    wallet.answers = [grpc.status.UNAVAILABLE, { balances: [{ assetId: 'BTC', available: '0.5', reserved: '0.1' }], version: 3 }];
-
-    // When
-    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
-
-    // Then
-    expect(response.json()).toMatchObject({ balancesStatus: 'live', assets: [{ assetId: 'BTC', quantity: '0.60000000' }] });
-    expect(wallet.calls).toBe(2);
-  });
-
-  test('Should treat NOT_FOUND from the wallet as a wallet without balances', async () => {
-    // Given
-    const { accountId } = (await signup('nowallet@example.com')).json();
-    wallet.answers = [grpc.status.NOT_FOUND];
-
-    // When
-    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
-
-    // Then
-    expect(response.json()).toMatchObject({ balancesStatus: 'live', assets: [] });
-  });
-
-  test('Should degrade without retrying when the wallet denies the call', async () => {
-    // Given
-    const { accountId } = (await signup('denied@example.com')).json();
-    wallet.answers = [grpc.status.PERMISSION_DENIED];
+    const { accountId } = (await signup('fresh@example.com')).json();
 
     // When
     const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
 
     // Then
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ balancesStatus: 'unavailable', assets: [] });
-    expect(wallet.calls).toBe(1);
+    expect(response.json()).toMatchObject({ accountId, assets: [] });
+    expect(response.json()).not.toHaveProperty('balancesStatus');
   });
 });
 
@@ -178,48 +143,33 @@ describe('wallet.balanceChanged consumer handler', () => {
   });
 });
 
-describe('AccountService.Exists with name + token', () => {
-  test('Should answer the wallet, refuse a wrong token and deny a caller outside the allowlist', async () => {
+describe('AccountService.Exists with the shared token', () => {
+  test('Should answer a caller with the token and refuse a wrong or missing token with UNAUTHENTICATED', async () => {
     // Given
     const { accountId } = (await signup('grpc@example.com')).json();
+    const denied: string[] = [];
     const { server, port } = await startAccountGrpcServer({
       accountExists: buildAccountCore(database.db).accountExists,
-      allowedCallers: parseAllowedCallers('wallet:wallet-grpc-test,order:order-grpc-test'),
+      token: 'internal-grpc-test',
       address: '127.0.0.1:0',
+      onDenied: (method) => denied.push(method),
     });
     const client = new AccountServiceClient(`127.0.0.1:${port}`, grpc.credentials.createInsecure());
-    const existsAs = (name: string, token: string, id: string) =>
-      new Promise<boolean>((resolve, reject) =>
-        client.exists({ accountId: id }, identify(new grpc.Metadata(), { name, token }), (error, response) =>
-          error ? reject(error) : resolve(response.exists),
-        ),
+    const existsWith = (token: string | undefined, id: string) => {
+      const metadata = new grpc.Metadata();
+      if (token !== undefined) metadata.set(serviceTokenHeader, token);
+      return new Promise<boolean>((resolve, reject) =>
+        client.exists({ accountId: id }, metadata, (error, response) => (error ? reject(error) : resolve(response.exists))),
       );
+    };
 
     // When & Then
-    await expect(existsAs('wallet', 'wallet-grpc-test', accountId)).resolves.toBe(true);
-    await expect(existsAs('wallet', 'wallet-grpc-test', '0199d5f4-2b9a-7c3e-9a51-2f1d3c4b5a69')).resolves.toBe(false);
-    await expect(existsAs('wallet', 'wrong-token', accountId)).rejects.toMatchObject({ code: grpc.status.UNAUTHENTICATED });
-    await expect(existsAs('order', 'order-grpc-test', accountId)).rejects.toMatchObject({ code: grpc.status.PERMISSION_DENIED });
+    await expect(existsWith('internal-grpc-test', accountId)).resolves.toBe(true);
+    await expect(existsWith('internal-grpc-test', '0199d5f4-2b9a-7c3e-9a51-2f1d3c4b5a69')).resolves.toBe(false);
+    await expect(existsWith('wrong-token', accountId)).rejects.toMatchObject({ code: grpc.status.UNAUTHENTICATED });
+    await expect(existsWith(undefined, accountId)).rejects.toMatchObject({ code: grpc.status.UNAUTHENTICATED });
+    expect(denied).toEqual(['/trading.account.v1.AccountService/Exists', '/trading.account.v1.AccountService/Exists']);
     client.close();
     server.forceShutdown();
-  });
-});
-
-describe('WalletService gateway identity', () => {
-  test('Should degrade without retrying when the wallet does not recognize the caller token', async () => {
-    // Given
-    const { accountId } = (await signup('untrusted@example.com')).json();
-    const untrusted = new GrpcWalletGateway({ address: wallet.address, identity: { name: 'account', token: 'stale' }, retryPolicy: fastRetry });
-    const untrustedApp = buildAccountApi({ db: database.db, rateLimiter: unlimited, wallet: untrusted, passwordHasher: fastHasher });
-    wallet.answers = [{ balances: [], version: 0 }];
-
-    // When
-    const response = await untrustedApp.inject({ method: 'GET', url: `/accounts/${accountId}` });
-
-    // Then
-    expect(response.json()).toMatchObject({ balancesStatus: 'unavailable', assets: [] });
-    expect(wallet.calls).toBe(0);
-    untrusted.close();
-    await untrustedApp.close();
   });
 });

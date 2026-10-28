@@ -1,5 +1,4 @@
-import type { BalanceProjection } from '../../application/contracts/balanceProjection.js';
-import type { BalanceChange } from '../../application/dtos/balanceView.js';
+import type { BalanceChange, BalanceProjection } from '../../application/contracts/balanceProjection.js';
 import type { KyselyTransactionRunner } from './kyselyTransactionRunner.js';
 import type { Database } from './database.js';
 

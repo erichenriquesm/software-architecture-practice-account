@@ -3,12 +3,7 @@ import type { AccountExists } from '../../application/usecases/accountExists.js'
 import { InvalidAccountDataError } from '../../domain/errors.js';
 import type { AccountServiceServer } from '../generated/account.js';
 import { AccountServiceService } from '../generated/account.js';
-import type { AllowedCallers, DeniedCall, GrpcAllowlist } from '../platform/security/serviceAuth.js';
-import { serviceAuthInterceptor, validateAllowlist } from '../platform/security/serviceAuth.js';
-
-export const existsMethod = AccountServiceService.exists.path;
-
-export const accountGrpcAllowlist: GrpcAllowlist = { [existsMethod]: ['wallet'] };
+import { serviceTokenInterceptor } from '../platform/security/serviceAuth.js';
 
 const statusFor = (error: unknown): grpc.status =>
   error instanceof InvalidAccountDataError ? grpc.status.INVALID_ARGUMENT : grpc.status.INTERNAL;
@@ -24,17 +19,13 @@ const implementation = (accountExists: AccountExists): AccountServiceServer => (
 
 export interface AccountGrpcServerOptions {
   readonly accountExists: AccountExists;
-  readonly allowedCallers: AllowedCallers;
+  readonly token: string;
   readonly address: string;
-  readonly allowlist?: GrpcAllowlist;
-  readonly onDenied?: (deniedCall: DeniedCall) => void;
+  readonly onDenied?: (method: string) => void;
 }
 
 export const startAccountGrpcServer = async (options: AccountGrpcServerOptions): Promise<{ server: grpc.Server; port: number }> => {
-  const allowlist = validateAllowlist(options.allowlist ?? accountGrpcAllowlist, [existsMethod]);
-  const server = new grpc.Server({
-    interceptors: [serviceAuthInterceptor(options.allowedCallers, allowlist, options.onDenied ?? (() => undefined))],
-  });
+  const server = new grpc.Server({ interceptors: [serviceTokenInterceptor(options.token, options.onDenied)] });
   server.addService(AccountServiceService, implementation(options.accountExists));
   const port = await new Promise<number>((resolve, reject) =>
     server.bindAsync(options.address, grpc.ServerCredentials.createInsecure(), (error, boundPort) =>

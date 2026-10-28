@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { FakeAccountRepository } from '../../../fakes/fakeAccountRepository.js';
 import { FakePasswordHasher } from '../../../fakes/fakePasswordHasher.js';
 import { fixedClock, fixedIds } from '../../../fakes/fixedSystem.js';
-import { RecordingDomainEventDispatcher } from '../../../fakes/recordingDomainEventDispatcher.js';
+import { RecordingEventPublisher } from '../../../fakes/recordingEventPublisher.js';
 import { RecordingTransactionRunner } from '../../../fakes/recordingTransactionRunner.js';
 import { DuplicateEmailError, InvalidAccountDataError } from '../../../../src/domain/errors.js';
 import { Signup } from '../../../../src/application/usecases/signup.js';
@@ -14,15 +14,15 @@ const signupInput = { name: 'Ana Souza', email: 'Ana@Example.com', document: '52
 const buildSignup = (takenEmails: readonly string[] = []) => {
   const repository = new FakeAccountRepository(takenEmails);
   const transactionRunner = new RecordingTransactionRunner();
-  const dispatcher = new RecordingDomainEventDispatcher();
-  const signup = new Signup(repository, new FakePasswordHasher(), transactionRunner, dispatcher, fixedIds(accountId), fixedClock(fixedNow));
-  return { signup, repository, transactionRunner, dispatcher };
+  const eventPublisher = new RecordingEventPublisher();
+  const signup = new Signup(repository, new FakePasswordHasher(), transactionRunner, eventPublisher, fixedIds(accountId), fixedClock(fixedNow));
+  return { signup, repository, transactionRunner, eventPublisher };
 };
 
 describe('Use case: Signup', () => {
-  test('Should create the account, hash the password and dispatch AccountCreated in one transaction', async () => {
+  test('Should create the account, hash the password and publish AccountCreated in one transaction', async () => {
     // Given
-    const { signup, repository, transactionRunner, dispatcher } = buildSignup();
+    const { signup, repository, transactionRunner, eventPublisher } = buildSignup();
 
     // When
     const createdAccountId = await signup.execute(signupInput);
@@ -33,17 +33,17 @@ describe('Use case: Signup', () => {
     expect(repository.saved[0]?.email.value).toBe('ana@example.com');
     expect(repository.saved[0]?.passwordHash.value).not.toContain('Abcdefg1');
     expect(transactionRunner.runs).toBe(1);
-    expect(dispatcher.dispatched).toEqual([{ type: 'AccountCreated', accountId, occurredAt: fixedNow }]);
+    expect(eventPublisher.published).toEqual([{ type: 'AccountCreated', accountId, occurredAt: fixedNow }]);
   });
 
   test('Should refuse an email that is already registered', async () => {
     // Given
-    const { signup, repository, dispatcher } = buildSignup(['ana@example.com']);
+    const { signup, repository, eventPublisher } = buildSignup(['ana@example.com']);
 
     // When & Then
     await expect(signup.execute(signupInput)).rejects.toBeInstanceOf(DuplicateEmailError);
     expect(repository.saved).toHaveLength(0);
-    expect(dispatcher.dispatched).toHaveLength(0);
+    expect(eventPublisher.published).toHaveLength(0);
   });
 
   test.each([

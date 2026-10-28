@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { BalanceProjection } from '../../../../src/application/contracts/balanceProjection.js';
-import type { BalanceChange } from '../../../../src/application/dtos/balanceView.js';
+import type { BalanceChange, BalanceProjection } from '../../../../src/application/contracts/balanceProjection.js';
 import { ProjectWalletBalance } from '../../../../src/application/usecases/projectWalletBalance.js';
 
 class InMemoryBalanceProjection implements BalanceProjection {

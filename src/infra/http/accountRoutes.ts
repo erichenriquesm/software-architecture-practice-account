@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { GetAccount } from '../../application/usecases/getAccount.js';
-import type { Signup } from '../../application/usecases/signup.js';
-import type { SignupInput } from '../../application/dtos/signupDto.js';
+import type { Signup, SignupInput } from '../../application/usecases/signup.js';
 import { AccountNotFoundError, DuplicateEmailError, InvalidAccountDataError } from '../../domain/errors.js';
 import type { ErrorMapping } from '../platform/http/errors/errorMapping.js';
 import type { RateLimitGroup } from '../platform/http/rateLimit/rateLimitPlugin.js';

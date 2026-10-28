@@ -1,4 +1,4 @@
-import type { AccountCreated } from '../domainEvents/accountCreated.js';
+import type { AccountCreated } from '../events/accountCreated.js';
 import type { AccountId } from '../valueObjects/accountId.js';
 import type { Cpf } from '../valueObjects/cpf.js';
 import type { Email } from '../valueObjects/email.js';

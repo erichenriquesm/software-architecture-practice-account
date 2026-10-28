@@ -1,4 +1,4 @@
-import type { AccountCreated } from '../../domain/domainEvents/accountCreated.js';
+import type { AccountCreated } from '../../domain/events/accountCreated.js';
 import type { InProcessDomainEventDispatcher } from '../platform/events/inProcessDomainEventDispatcher.js';
 import { createEnvelope } from '../platform/messaging/envelope.js';
 import { appendToOutbox } from '../platform/messaging/outbox.js';

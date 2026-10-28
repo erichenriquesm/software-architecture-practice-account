@@ -3,6 +3,7 @@ import type { ColumnType, Generated } from 'kysely';
 export interface Database {
   account: AccountTable;
   account_balance_view: AccountBalanceViewTable;
+  session: SessionTable;
   outbox: OutboxTable;
   inbox: InboxTable;
 }
@@ -39,4 +40,13 @@ export interface AccountBalanceViewTable {
   reserved: ColumnType<string, string, string>;
   version: ColumnType<string, number, number>;
   updated_at: Date;
+}
+
+export interface SessionTable {
+  session_id: string;
+  account_id: string;
+  token_hash: string;
+  created_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
 }

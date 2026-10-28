@@ -1,7 +1,9 @@
+import type { KeyObject } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import type { PostgresSettings } from './database/postgres.js';
 import { MissingConfigurationError, numberEnv, requiredEnv } from './platform/config/env.js';
 import type { RateLimitPolicy } from './platform/http/rateLimit/slidingWindow.js';
+import { userTokenPrivateKey, userTokenPublicKey } from './platform/security/userToken.js';
 
 export const apiPortSetting = (): number => numberEnv('API_PORT', 3000);
 
@@ -33,6 +35,15 @@ export const redisSettings = (): RedisSettings => ({
 
 /** Shared token every internal gRPC caller sends as `x-service-token`. */
 export const grpcTokenSetting = (): string => requiredEnv('GRPC_TOKEN');
+
+/** Ed25519 pair for the internal user JWT: account signs with the private key, every service verifies with the public one. */
+export const userTokenKeysSetting = (): { privateKey: KeyObject; publicKey: KeyObject } => ({
+  privateKey: userTokenPrivateKey(requiredEnv('USER_TOKEN_PRIVATE_KEY')),
+  publicKey: userTokenPublicKey(requiredEnv('USER_TOKEN_PUBLIC_KEY')),
+});
+
+/** Only "false" turns Secure off, for a browser that reaches the edge over plain HTTP on a host it does not trust. */
+export const secureCookieSetting = (env: NodeJS.ProcessEnv = process.env): boolean => env.SESSION_COOKIE_SECURE !== 'false';
 
 const unitMs: ReadonlyMap<string, number> = new Map([
   ['s', 1_000],

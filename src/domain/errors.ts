@@ -21,3 +21,25 @@ export class AccountNotFoundError extends Error {
     this.name = 'AccountNotFoundError';
   }
 }
+
+/** Same answer for a wrong password and an unknown email, so a login never reveals which emails exist. */
+export class InvalidCredentialsError extends Error {
+  constructor() {
+    super('invalid email or password');
+    this.name = 'InvalidCredentialsError';
+  }
+}
+
+export class LoginBlockedError extends Error {
+  constructor(readonly retryAfterSeconds: number) {
+    super(`too many login attempts, retry in ${retryAfterSeconds}s`);
+    this.name = 'LoginBlockedError';
+  }
+}
+
+export class UnauthenticatedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'UnauthenticatedError';
+  }
+}

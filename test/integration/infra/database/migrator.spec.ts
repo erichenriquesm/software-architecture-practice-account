@@ -98,7 +98,7 @@ describe('Migrator (Laravel-style batches)', () => {
     await migrator.rollback();
 
     // Then
-    expect(created).toEqual(['account', 'account_balance_view', 'inbox', 'migrations', 'outbox']);
+    expect(created).toEqual(['account', 'account_balance_view', 'inbox', 'migrations', 'outbox', 'session']);
     expect(await tables()).toEqual(['migrations']);
   });
 });

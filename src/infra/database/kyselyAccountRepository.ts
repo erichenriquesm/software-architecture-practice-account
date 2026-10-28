@@ -1,8 +1,9 @@
 import { sql } from 'kysely';
-import type { AccountRepository } from '../../application/contracts/accountRepository.js';
+import type { AccountCredentials, AccountRepository } from '../../application/contracts/accountRepository.js';
 import type { Account } from '../../domain/entities/account.js';
 import { DuplicateEmailError } from '../../domain/errors.js';
 import type { Email } from '../../domain/valueObjects/email.js';
+import { PasswordHash } from '../../domain/valueObjects/passwordHash.js';
 import type { KyselyTransactionRunner } from './kyselyTransactionRunner.js';
 import type { Database } from './database.js';
 
@@ -21,6 +22,17 @@ export class KyselyAccountRepository implements AccountRepository {
       .where(sql<string>`lower(email)`, '=', email.value)
       .executeTakeFirst();
     return row !== undefined;
+  }
+
+  async findCredentialsByEmail(email: string): Promise<AccountCredentials | undefined> {
+    const row = await this.runner
+      .executor()
+      .selectFrom('account')
+      .select(['account_id', 'password_hash'])
+      .where(sql<string>`lower(email)`, '=', email.toLowerCase())
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return { accountId: row.account_id, passwordHash: PasswordHash.from(row.password_hash) };
   }
 
   async save(account: Account): Promise<void> {

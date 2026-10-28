@@ -4,6 +4,8 @@ import { Argon2PasswordHasher } from './crypto/argon2PasswordHasher.js';
 import { createDatabase } from './database/postgres.js';
 import { startAccountGrpcServer } from './grpc/accountGrpcServer.js';
 import { RedisRateLimiter } from './platform/http/rateLimit/rateLimiter.js';
+import { CounterLoginThrottle } from './security/counterLoginThrottle.js';
+import { RedisCounterStore } from './security/redisCounterStore.js';
 import {
   apiPortSetting,
   grpcPortSetting,
@@ -11,7 +13,9 @@ import {
   postgresSettings,
   rateLimitSetting,
   redisSettings,
+  secureCookieSetting,
   trustedProxySubnets,
+  userTokenKeysSetting,
 } from './settings.js';
 
 const db = createDatabase(postgresSettings());
@@ -28,10 +32,14 @@ const app = buildAccountApi({
   rateLimits: {
     authPerIp: rateLimitSetting('RATE_LIMITS_AUTH_PER_IP', '5/1h'),
     authPerEmail: rateLimitSetting('RATE_LIMITS_AUTH_PER_EMAIL', '3/1h'),
+    loginPerIp: rateLimitSetting('RATE_LIMITS_LOGIN_PER_IP', '30/1h'),
     privateReadPerIp: rateLimitSetting('RATE_LIMITS_PRIVATE_READ_PER_IP', '600/1m'),
     privateReadPerAccount: rateLimitSetting('RATE_LIMITS_PRIVATE_READ_PER_ACCOUNT', '300/1m'),
   },
   passwordHasher: new Argon2PasswordHasher(),
+  loginThrottle: new CounterLoginThrottle(new RedisCounterStore(redis, `${serviceName}:login`), (error) => app.log.warn({ err: error }, 'login throttle unavailable, failing open')),
+  userTokenKeys: userTokenKeysSetting(),
+  secureCookie: secureCookieSetting(),
   trustProxy: trustedProxySubnets(),
   logger: true,
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import grpc from '@grpc/grpc-js';
 import type { FastifyInstance } from 'fastify';
 import { Redis } from 'ioredis';
@@ -17,8 +17,15 @@ import { RedisRateLimiter } from '../../../src/infra/platform/http/rateLimit/rat
 import { createEnvelope, loadEnvelopeValidator } from '../../../src/infra/platform/messaging/envelope.js';
 import { loadSchemaValidator } from '../../../src/infra/platform/messaging/schemas.js';
 import { serviceTokenHeader } from '../../../src/infra/platform/security/serviceAuth.js';
+import { verifyUserToken } from '../../../src/infra/platform/security/userToken.js';
+import { CounterLoginThrottle } from '../../../src/infra/security/counterLoginThrottle.js';
+import { MemoryCounterStore } from '../../fakes/memoryCounterStore.js';
+import { bearer, nowSeconds, testUserTokenKeys } from '../../support/userTokens.js';
 
-const fastHasher: PasswordHasher = { hash: async (password: Password) => PasswordHash.from(`$argon2id$test$${password.value.length}`) };
+const fastHasher: PasswordHasher = {
+  hash: async (password: Password) => PasswordHash.from(`$argon2id$test$${password.value}`),
+  verify: async (password: string, hash: PasswordHash | undefined) => hash?.value === `$argon2id$test$${password}`,
+};
 const unlimited: RateLimiter = {
   check: async (check) => ({ allowed: true, remaining: check.policy.limit, resetSeconds: 0, retryAfterSeconds: 0, policy: check.policy }),
 };
@@ -26,12 +33,17 @@ const unlimited: RateLimiter = {
 let database: TestDatabase;
 let app: FastifyInstance;
 
+const authDependencies = () => ({
+  loginThrottle: new CounterLoginThrottle(new MemoryCounterStore(), () => undefined),
+  userTokenKeys: testUserTokenKeys,
+});
+
 const signupBody = (email: string) => ({ name: 'Ana Souza', email, document: '529.982.247-25', password: 'Abcdefg1' });
 const signup = (email: string) => app.inject({ method: 'POST', url: '/signup', payload: signupBody(email) });
 
 beforeAll(async () => {
   database = await createTestDatabase();
-  app = buildAccountApi({ db: database.db, rateLimiter: unlimited, passwordHasher: fastHasher });
+  app = buildAccountApi({ db: database.db, rateLimiter: unlimited, passwordHasher: fastHasher, ...authDependencies() });
 });
 
 afterAll(async () => {
@@ -69,7 +81,7 @@ describe('Signup rate limit', () => {
     // Given
     const redis = new Redis(process.env.TEST_REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: 1 });
     const rateLimiter = new RedisRateLimiter(redis, `account${randomUUID().slice(0, 8)}`);
-    const limitedApp = buildAccountApi({ db: database.db, rateLimiter, passwordHasher: fastHasher });
+    const limitedApp = buildAccountApi({ db: database.db, rateLimiter, passwordHasher: fastHasher, ...authDependencies() });
     const attempt = (email: string) => limitedApp.inject({ method: 'POST', url: '/signup', payload: signupBody(email) });
 
     // When
@@ -96,7 +108,7 @@ describe('GetAccount balances', () => {
     await projectBalance(accountId, '100', 1);
 
     // When
-    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
+    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}`, headers: bearer(accountId) });
 
     // Then
     expect(response.json()).toEqual({
@@ -113,7 +125,7 @@ describe('GetAccount balances', () => {
     const { accountId } = (await signup('fresh@example.com')).json();
 
     // When
-    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}` });
+    const response = await app.inject({ method: 'GET', url: `/accounts/${accountId}`, headers: bearer(accountId) });
 
     // Then
     expect(response.statusCode).toBe(200);
@@ -171,5 +183,114 @@ describe('AccountService.Exists with the shared token', () => {
     expect(denied).toEqual(['/trading.account.v1.AccountService/Exists', '/trading.account.v1.AccountService/Exists']);
     client.close();
     server.forceShutdown();
+  });
+});
+
+describe('Login, session and the internal user token', () => {
+  const login = (email: string, password: string) => app.inject({ method: 'POST', url: '/login', payload: { email, password } });
+  const sessionOf = (response: { headers: Record<string, unknown> }) => String(response.headers['set-cookie']).split(';')[0] ?? '';
+  const internalSession = (cookie: string | undefined, audience = 'wallet') =>
+    app.inject({ method: 'GET', url: '/internal/session', headers: { ...(cookie ? { cookie } : {}), 'x-audience': audience } });
+
+  test('Should start a session in an HttpOnly, Secure, SameSite=Strict cookie and keep only its hash', async () => {
+    // Given
+    const { accountId } = (await signup('login@example.com')).json();
+
+    // When
+    const response = await login('LOGIN@example.com ', 'Abcdefg1');
+
+    // Then
+    expect(response.statusCode).toBe(204);
+    const setCookie = String(response.headers['set-cookie']);
+    expect(setCookie).toMatch(/^session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Strict; Path=\/; Max-Age=43200$/);
+    const token = sessionOf(response).slice('session='.length);
+    const rows = await database.db.selectFrom('session').select(['account_id', 'token_hash']).where('account_id', '=', accountId).execute();
+    expect(rows).toEqual([{ account_id: accountId, token_hash: createHash('sha256').update(token).digest('hex') }]);
+  });
+
+  test('Should answer a wrong password and an unknown email with the same 401', async () => {
+    // Given
+    await signup('wrong@example.com');
+
+    // When
+    const wrongPassword = await login('wrong@example.com', 'Abcdefg2');
+    const unknownEmail = await login('nobody@example.com', 'Abcdefg1');
+
+    // Then
+    expect([wrongPassword.statusCode, unknownEmail.statusCode]).toEqual([401, 401]);
+    expect(wrongPassword.json()).toEqual(unknownEmail.json());
+    expect(wrongPassword.json()).toMatchObject({ error: 'invalidCredentials' });
+    expect(wrongPassword.headers['set-cookie']).toBeUndefined();
+  });
+
+  test('Should lock the email after 5 failures and answer 429 with Retry-After, even with the right password', async () => {
+    // Given
+    await signup('locked@example.com');
+    for (let attempt = 0; attempt < 5; attempt += 1) await login('locked@example.com', 'Wrongpass1');
+
+    // When
+    const response = await login('locked@example.com', 'Abcdefg1');
+
+    // Then
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toMatchObject({ error: 'tooManyLoginAttempts' });
+    expect(Number(response.headers['retry-after'])).toBe(300);
+  });
+
+  test('Should trade a live session for a 60 s user token for the asked audience', async () => {
+    // Given
+    const { accountId } = (await signup('token@example.com')).json();
+    const cookie = sessionOf(await login('token@example.com', 'Abcdefg1'));
+
+    // When
+    const response = await internalSession(cookie, 'wallet');
+
+    // Then
+    expect(response.statusCode).toBe(204);
+    const claims = verifyUserToken(String(response.headers['x-user-token']), testUserTokenKeys.publicKey, 'wallet', nowSeconds());
+    expect(claims).toMatchObject({ iss: 'account', sub: accountId, aud: 'wallet' });
+    expect(claims.exp - claims.iat).toBe(60);
+  });
+
+  test('Should refuse the internal token without a session, after logout, and for an unknown audience', async () => {
+    // Given
+    await signup('logout@example.com');
+    const cookie = sessionOf(await login('logout@example.com', 'Abcdefg1'));
+
+    // When
+    const unknownAudience = await internalSession(cookie, 'matching');
+    const logout = await app.inject({ method: 'POST', url: '/logout', headers: { cookie } });
+    const afterLogout = await internalSession(cookie);
+    const noCookie = await internalSession(undefined);
+
+    // Then
+    expect(unknownAudience.statusCode).toBe(400);
+    expect(logout.statusCode).toBe(204);
+    expect(String(logout.headers['set-cookie'])).toContain('Max-Age=0');
+    expect([afterLogout.statusCode, noCookie.statusCode]).toEqual([401, 401]);
+    expect(afterLogout.json()).toMatchObject({ error: 'unauthenticated' });
+  });
+
+  test('Should answer /me only with a user token and refuse another account on /accounts/:accountId', async () => {
+    // Given
+    const { accountId } = (await signup('me@example.com')).json();
+    const other = (await signup('other@example.com')).json().accountId as string;
+
+    // When
+    const me = await app.inject({ method: 'GET', url: '/me', headers: bearer(accountId) });
+    const anonymous = await app.inject({ method: 'GET', url: '/me' });
+    const wrongAudience = await app.inject({ method: 'GET', url: '/me', headers: bearer(accountId, { aud: 'wallet' }) });
+    const foreign = await app.inject({ method: 'GET', url: `/accounts/${other}`, headers: bearer(accountId) });
+
+    // Then
+    expect(me.json()).toEqual({ accountId, name: 'Ana Souza', email: 'me@example.com' });
+    expect([anonymous.statusCode, wrongAudience.statusCode]).toEqual([401, 401]);
+    expect(foreign.statusCode).toBe(403);
+  });
+
+  test('Should reject a login body with fields outside the contract', async () => {
+    const response = await app.inject({ method: 'POST', url: '/login', payload: { email: 'a@example.com', password: 'Abcdefg1', accountId: 'x' } });
+
+    expect(response.statusCode).toBe(422);
   });
 });

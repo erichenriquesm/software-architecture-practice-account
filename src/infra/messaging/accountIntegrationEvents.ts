@@ -18,7 +18,7 @@ export const registerAccountIntegrationEvents = (
   dispatcher: InProcessDomainEventDispatcher,
   runner: KyselyTransactionRunner<Database>,
   validateAccountCreated: SchemaValidator<AccountCreatedPayload> = loadSchemaValidator(
-    'src/infra/contracts/published/events/account.created.v1.schema.json',
+    'src/infra/schemas/published/events/account.created.v1.schema.json',
   ),
 ): void => {
   dispatcher.on<AccountCreated>('AccountCreated', async (event) => {

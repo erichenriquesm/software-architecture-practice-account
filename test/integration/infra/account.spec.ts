@@ -65,7 +65,7 @@ describe('Signup', () => {
     const row = outbox.find((candidate) => (candidate.envelope as { payload: { accountId: string } }).payload.accountId === accountId);
     expect(row?.routing_key).toBe('account.created');
     const envelope = loadEnvelopeValidator()(row?.envelope);
-    expect(loadSchemaValidator('src/infra/contracts/published/events/account.created.v1.schema.json')(envelope.payload)).toEqual({ accountId });
+    expect(loadSchemaValidator('src/infra/schemas/published/events/account.created.v1.schema.json')(envelope.payload)).toEqual({ accountId });
     expect(envelope.correlationId).toBe(response.headers['x-correlation-id']);
   });
 

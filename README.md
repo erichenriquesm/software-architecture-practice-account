@@ -10,6 +10,18 @@ Cadastra contas (nome, e-mail, CPF e senha com argon2id) e responde a conta com 
 
 A especificação completa (modelo, casos de uso, dados, testes) está na spec do serviço: [`sdd/services/account.md`](https://github.com/erichenriquesm/software-architecture-practice/blob/main/sdd/services/account.md). As regras de arquitetura valem para todos os serviços: [`sdd/01-principios.md`](https://github.com/erichenriquesm/software-architecture-practice/blob/main/sdd/01-principios.md).
 
+## Comece por aqui
+
+Um cadastro, de ponta a ponta:
+
+1. `src/infra/http/accountRoutes.ts`: a rota `POST /signup` recebe o corpo e chama o caso de uso.
+2. `src/application/usecases/signup.ts`: valida, faz o hash da senha e cria a conta.
+3. `src/domain/entities/account.ts`: a entidade, com as regras (e-mail, CPF) e o evento `AccountCreated`.
+4. `src/infra/database/kyselyAccountRepository.ts`: grava a conta no Postgres.
+5. `src/infra/messaging/accountIntegrationEvents.ts`: transforma o evento em `account.created` e grava no outbox, na mesma transação; o worker publica no RabbitMQ.
+
+Para a leitura (`GET /accounts/:accountId`): `getAccount.ts` → `kyselyAccountDao.ts` (dados da conta) e `kyselyBalanceDao.ts` (saldos projetados do `wallet`).
+
 ## API
 
 | Rota | O que faz |
@@ -24,7 +36,7 @@ A especificação completa (modelo, casos de uso, dados, testes) está na spec d
 - **Publica:** `account.created`
 - **Consome:** `wallet.balanceChanged` (fila `account.walletBalances`)
 
-Os contratos ficam em `src/infra/contracts/`: `published/` (este serviço é o dono) e `consumed/` (cópias do que ele consome, conferidas pelo `make check` do repositório guarda-chuva).
+Os contratos ficam em `src/infra/schemas/`: `published/` (este serviço é o dono) e `consumed/` (cópias do que ele consome, conferidas pelo `make check` do repositório guarda-chuva).
 
 ## Como rodar
 
@@ -51,9 +63,9 @@ Dentro da pasta do serviço (`backend/account/`):
 
 ```
 src/
-  domain/        regras de negócio (entities, valueObjects, events, services)
+  domain/        regras de negócio (entities, valueObjects, events)
   application/   casos de uso, DTOs e contratos (interfaces)
-  infra/         HTTP, mensageria, banco, plataforma técnica, contratos de eventos
+  infra/         HTTP, mensageria, banco, plataforma técnica, schemas de eventos
 test/
   unit/  integration/  fakes/  support/
 docker/          Dockerfile e composes (só para ambiente local)

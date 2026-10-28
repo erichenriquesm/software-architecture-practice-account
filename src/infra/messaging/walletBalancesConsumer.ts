@@ -18,7 +18,7 @@ export const classifyWalletBalancesFailure = (error: unknown): FailureKind =>
 export const walletBalancesHandler = (
   projectWalletBalance: ProjectWalletBalance,
   validatePayload: SchemaValidator<BalanceChange> = loadSchemaValidator(
-    'src/infra/contracts/consumed/events/wallet.balanceChanged.v1.schema.json',
+    'src/infra/schemas/consumed/events/wallet.balanceChanged.v1.schema.json',
   ),
 ): MessageHandler => async (envelope) => {
   if (envelope.type !== 'wallet.balanceChanged' || envelope.version !== 1) {
